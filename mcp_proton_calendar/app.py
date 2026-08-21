@@ -8,6 +8,8 @@ from typing import Optional
 
 from fastmcp import FastMCP
 
+from mcp_proton_calendar.credentials import describe_sources, get_smtp_password
+
 mcp = FastMCP("proton-calendar")
 
 # Configuration from environment
@@ -16,7 +18,10 @@ FULL_NAME = os.environ.get("PROTON_CALENDAR_FULL_NAME", "")
 SMTP_HOST = os.environ.get("PROTON_CALENDAR_SMTP_HOST", "127.0.0.1")
 SMTP_PORT = int(os.environ.get("PROTON_CALENDAR_SMTP_PORT", "1025"))
 SMTP_USER = os.environ.get("PROTON_CALENDAR_SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("PROTON_CALENDAR_SMTP_PASSWORD", "")
+# The SMTP token is resolved lazily by credentials.get_smtp_password() (keyring
+# first, PROTON_CALENDAR_SMTP_PASSWORD as fallback) so that importing this module
+# never touches the keychain and a rotated Bridge token is picked up without a
+# server restart.
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -81,6 +86,12 @@ def _send_ics_email(
     recipients: Optional[list[str]] = None,
 ) -> None:
     """Send an ICS calendar invitation email via Proton Bridge."""
+    smtp_password = get_smtp_password()
+    if not smtp_password:
+        raise RuntimeError(
+            f"No Proton Bridge SMTP credential found. Checked {describe_sources()}."
+        )
+
     all_recipients = [EMAIL]
     if recipients:
         all_recipients.extend(recipients)
@@ -105,7 +116,7 @@ def _send_ics_email(
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.login(SMTP_USER, smtp_password)
         server.sendmail(EMAIL, all_recipients, msg.as_bytes())
 
 
