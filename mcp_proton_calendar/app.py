@@ -9,6 +9,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from mcp_proton_calendar.credentials import describe_sources, get_smtp_password
+from mcp_proton_calendar.ics import build_ics
 
 mcp = FastMCP("proton-calendar")
 
@@ -24,59 +25,19 @@ SMTP_USER = os.environ.get("PROTON_CALENDAR_SMTP_USER", "")
 # server restart.
 
 
-def _to_utc(dt: datetime) -> datetime:
-    """Convert datetime to UTC. Treats naive datetimes as local time."""
-    if dt.tzinfo is None:
-        dt = dt.astimezone()  # interpret as local time
-    return dt.astimezone(timezone.utc)
-
-
-def _format_datetime(dt: datetime, all_day: bool = False) -> str:
-    """Format datetime for ICS. Uses DATE for all-day, UTC DATETIME otherwise."""
-    if all_day:
-        return dt.strftime("%Y%m%d")
-    return _to_utc(dt).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _generate_ics(
-    method: str,
-    uid: str,
-    summary: str,
-    start_time: datetime,
-    end_time: datetime,
-    location: Optional[str] = None,
-    description: Optional[str] = None,
-    all_day: bool = False,
-    sequence: int = 0,
-    status: str = "CONFIRMED",
-    attendees: Optional[list[str]] = None,
-) -> str:
-    """Generate an ICS calendar string."""
-    dt_prefix = "VALUE=DATE:" if all_day else ":"
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//mcp-proton-calendar//EN",
-        f"METHOD:{method}",
-        "BEGIN:VEVENT",
-        f"UID:{uid}",
-        f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
-        f"DTSTART{dt_prefix}{_format_datetime(start_time, all_day)}",
-        f"DTEND{dt_prefix}{_format_datetime(end_time, all_day)}",
-        f"SUMMARY:{summary}",
-        f"SEQUENCE:{sequence}",
-        f"STATUS:{status}",
-    ]
-    if attendees:
-        lines.append(f"ORGANIZER;CN={FULL_NAME}:mailto:{EMAIL}")
-        for attendee in attendees:
-            lines.append(f"ATTENDEE;RSVP=TRUE:mailto:{attendee}")
-    if location:
-        lines.append(f"LOCATION:{location}")
-    if description:
-        lines.append(f"DESCRIPTION:{description}")
-    lines.extend(["END:VEVENT", "END:VCALENDAR"])
-    return "\r\n".join(lines)
+def _generate_ics(method: str, uid: str, summary: str, start_time: datetime, end_time: datetime, **fields) -> str:
+    """Build the ICS for one event, as this organizer, stamped now."""
+    return build_ics(
+        method=method,
+        uid=uid,
+        summary=summary,
+        start=start_time,
+        end=end_time,
+        dtstamp=datetime.now(timezone.utc),
+        organizer_email=EMAIL,
+        organizer_name=FULL_NAME,
+        **fields,
+    )
 
 
 def _send_ics_email(
@@ -140,7 +101,9 @@ def create_proton_calendar_event(
         end_time: Event end time (ISO format datetime)
         location: Event location (optional)
         description: Event description (optional)
-        all_day: Whether this is an all-day event (optional, default False)
+        all_day: Whether this is an all-day event (optional, default False). A later
+            end_time at midnight is exclusive, as in RFC 5545; a same-day end, or one
+            with a time of day, includes that date.
         attendees: List of email addresses to invite (optional). When provided,
             invitees receive the event as an invitation they can accept/decline.
     """
@@ -200,7 +163,9 @@ def update_proton_calendar_event(
         sequence: Sequence number for the update (should increment from previous, default 1)
         location: Updated event location (optional)
         description: Updated event description (optional)
-        all_day: Whether this is an all-day event (optional, default False)
+        all_day: Whether this is an all-day event (optional, default False). A later
+            end_time at midnight is exclusive, as in RFC 5545; a same-day end, or one
+            with a time of day, includes that date.
         attendees: List of email addresses to invite (optional)
     """
     method = "REQUEST" if attendees else "PUBLISH"
