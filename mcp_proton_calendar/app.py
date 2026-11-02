@@ -56,7 +56,7 @@ async def _call_tool(name: str, arguments: dict[str, Any]):
     return [types.TextContent(type="text", text=text)], {"result": text}
 
 
-def _generate_ics(method: str, uid: str, summary: str, start_time: datetime, end_time: datetime, **fields) -> str:
+def _generate_ics(method: str, uid: str, summary: str, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, **fields) -> str:
     """Build the ICS for one event, as this organizer, stamped now."""
     return build_ics(
         method=method,
@@ -246,13 +246,10 @@ def cancel_proton_calendar_event(
             cancelled too (optional). Without them it goes to you only, and invitees
             keep the event.
     """
-    now = datetime.now(timezone.utc)
     ics_content = _generate_ics(
         method="CANCEL",
         uid=event_uid,
         summary=summary,
-        start_time=now,
-        end_time=now,
         status="CANCELLED",
         sequence=99,
         attendees=attendees,

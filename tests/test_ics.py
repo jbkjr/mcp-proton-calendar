@@ -232,10 +232,7 @@ def test_every_line_ends_in_crlf(server, fake_smtp) -> None:
 
 
 def test_golden_cancel_without_attendees_is_self_only(server, fake_smtp) -> None:
-    lines = ics_of(fake_smtp, CANCEL, event_uid="abc@example.com", summary="Gone")
-    now = [line for line in lines if line.startswith(("DTSTART", "DTEND"))]
-    assert len(now) == 2
-    assert [line for line in lines if line not in now] == event(
+    assert ics_of(fake_smtp, CANCEL, event_uid="abc@example.com", summary="Gone") == event(
         "CANCEL",
         "UID:abc@example.com",
         "DTSTAMP:<now>",
@@ -252,8 +249,7 @@ def test_golden_cancel_with_attendees_reaches_them(server, fake_smtp) -> None:
 
     assert result.isError is False, result.content[0].text
     assert "Attendees: a@example.com, b@example.com" in result.content[0].text
-    lines = masked(last_sent(fake_smtp).ics)
-    assert [line for line in lines if not line.startswith(("DTSTART", "DTEND"))] == event(
+    assert masked(last_sent(fake_smtp).ics) == event(
         "CANCEL",
         "UID:abc@example.com",
         "DTSTAMP:<now>",
