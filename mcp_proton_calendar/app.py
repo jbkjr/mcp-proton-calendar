@@ -6,7 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from mcp_proton_calendar.credentials import describe_sources, get_smtp_password
 
