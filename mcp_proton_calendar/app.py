@@ -203,6 +203,7 @@ def update_proton_calendar_event(
 def cancel_proton_calendar_event(
     event_uid: str,
     summary: str,
+    attendees: Optional[list[str]] = None,
 ) -> str:
     """Cancel an existing Proton Calendar event by sending a cancellation ICS.
 
@@ -211,6 +212,9 @@ def cancel_proton_calendar_event(
     Args:
         event_uid: The UID of the event to cancel (from create_proton_calendar_event)
         summary: The event title/summary (for the cancellation email subject)
+        attendees: Email addresses to send the cancellation to, so invitees' copies are
+            cancelled too (optional). Without them it goes to you only, and invitees
+            keep the event.
     """
     now = datetime.now(timezone.utc)
     ics_content = _generate_ics(
@@ -221,14 +225,21 @@ def cancel_proton_calendar_event(
         end_time=now,
         status="CANCELLED",
         sequence=99,
+        attendees=attendees,
     )
 
-    _send_ics_email(f"Calendar Cancellation: {summary}", ics_content, method="CANCEL")
+    _send_ics_email(
+        f"Calendar Cancellation: {summary}",
+        ics_content,
+        method="CANCEL",
+        recipients=attendees,
+    )
 
     return (
         f"Event cancellation sent successfully.\n"
         f"UID: {event_uid}\n"
         f"Summary: {summary}\n"
+        + (f"Attendees: {', '.join(attendees)}\n" if attendees else "")
     )
 
 

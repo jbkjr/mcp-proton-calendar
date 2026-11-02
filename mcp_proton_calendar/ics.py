@@ -103,7 +103,8 @@ def build_ics(
     if attendees:
         cn = f";CN={_param(organizer_name)}" if organizer_name else ""
         lines.append(f"ORGANIZER{cn}:mailto:{organizer_email}")
-        lines.extend(f"ATTENDEE;RSVP=TRUE:{_mailto(attendee)}" for attendee in attendees)
+        rsvp = "" if method == "CANCEL" else ";RSVP=TRUE"  # a cancellation expects no reply
+        lines.extend(f"ATTENDEE{rsvp}:{_mailto(attendee)}" for attendee in attendees)
     if location:
         lines.append(f"LOCATION:{escape_text(location)}")
     if description:

@@ -229,3 +229,49 @@ def test_lines_stay_within_75_octets_and_unfold_to_the_original(server, fake_smt
 def test_every_line_ends_in_crlf(server, fake_smtp) -> None:
     call(CREATE, **TIMES, summary="s")
     assert last_sent(fake_smtp).ics.endswith("END:VCALENDAR\r\n")
+
+
+def test_golden_cancel_without_attendees_is_self_only(server, fake_smtp) -> None:
+    lines = ics_of(fake_smtp, CANCEL, event_uid="abc@example.com", summary="Gone")
+    now = [line for line in lines if line.startswith(("DTSTART", "DTEND"))]
+    assert len(now) == 2
+    assert [line for line in lines if line not in now] == event(
+        "CANCEL",
+        "UID:abc@example.com",
+        "DTSTAMP:<now>",
+        "SUMMARY:Gone",
+        "SEQUENCE:99",
+        "STATUS:CANCELLED",
+    )
+    assert last_sent(fake_smtp).recipients == ["me@example.com"]
+    assert last_sent(fake_smtp).message["Subject"] == "Calendar Cancellation: Gone"
+
+
+def test_golden_cancel_with_attendees_reaches_them(server, fake_smtp) -> None:
+    result = call(CANCEL, event_uid="abc@example.com", summary="Gone", attendees=["a@example.com", "b@example.com"])
+
+    assert result.isError is False, result.content[0].text
+    assert "Attendees: a@example.com, b@example.com" in result.content[0].text
+    lines = masked(last_sent(fake_smtp).ics)
+    assert [line for line in lines if not line.startswith(("DTSTART", "DTEND"))] == event(
+        "CANCEL",
+        "UID:abc@example.com",
+        "DTSTAMP:<now>",
+        "SUMMARY:Gone",
+        "SEQUENCE:99",
+        "STATUS:CANCELLED",
+        'ORGANIZER;CN="Test Organizer":mailto:me@example.com',
+        "ATTENDEE:mailto:a@example.com",
+        "ATTENDEE:mailto:b@example.com",
+    )
+    sent = last_sent(fake_smtp)
+    assert sent.recipients == ["me@example.com", "a@example.com", "b@example.com"]
+    part = next(p for p in sent.message.walk() if p.get_content_type() == "text/calendar")
+    assert part.get_param("method") == "CANCEL"
+
+
+def test_cancel_with_a_malformed_attendee_sends_nothing(server, fake_smtp) -> None:
+    result = call(CANCEL, event_uid="u", summary="s", attendees=["a@example.com\nATTENDEE:x"])
+
+    assert result.isError is True
+    assert fake_smtp.instances == []

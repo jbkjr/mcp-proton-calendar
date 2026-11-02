@@ -1,6 +1,20 @@
 {
   "cancel_proton_calendar_event": {
     "properties": {
+      "attendees": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
       "event_uid": {
         "type": "string"
       },
