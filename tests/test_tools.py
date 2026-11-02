@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from conftest import call, last_sent, list_tools
 
 SNAPSHOT = json.loads((Path(__file__).parent / "tool_schema.json").read_text())
@@ -29,6 +30,12 @@ def test_tool_names_and_schema_match_the_snapshot(server) -> None:
     for tool in tools:
         assert _without_titles(tool.inputSchema["properties"]) == SNAPSHOT[tool.name]["properties"], tool.name
         assert sorted(tool.inputSchema["required"]) == sorted(SNAPSHOT[tool.name]["required"]), tool.name
+
+
+def test_descriptions_are_the_cleaned_docstrings(server) -> None:
+    for tool in list_tools():
+        assert tool.description.startswith(("Create a new event", "Update an existing", "Cancel an existing"))
+        assert "\n    " not in tool.description.split("Args:")[0]
 
 
 def test_create_returns_text_and_structured_result(server, fake_smtp) -> None:
@@ -93,3 +100,55 @@ def test_empty_email_stops_the_server_at_start() -> None:
         )
         assert process.returncode != 0
         assert "PROTON_CALENDAR_EMAIL" in process.stderr
+
+
+TIMES = {"start_time": "2026-03-10T12:00:00Z", "end_time": "2026-03-10T13:00:00Z"}
+
+
+@pytest.mark.parametrize("text", ['{"topic": "agenda"}', "null", "42", "true", '"quoted"', "[1, 2]"])
+@pytest.mark.parametrize("field,prop", [("description", "DESCRIPTION"), ("location", "LOCATION")])
+def test_optional_strings_arrive_exactly_as_sent(server, fake_smtp, field, prop, text) -> None:
+    result = call("create_proton_calendar_event", summary="s", **TIMES, **{field: text})
+
+    assert result.isError is False, result.content[0].text
+    escaped = text.replace(",", "\\,")
+    assert f"{prop}:{escaped}" in last_sent(fake_smtp).ics.split("\r\n")
+
+
+def test_update_strings_arrive_exactly_as_sent(server, fake_smtp) -> None:
+    result = call("update_proton_calendar_event", event_uid="u", summary="s", description="null", location="42", **TIMES)
+
+    assert result.isError is False, result.content[0].text
+    lines = last_sent(fake_smtp).ics.split("\r\n")
+    assert "DESCRIPTION:null" in lines and "LOCATION:42" in lines
+
+
+@pytest.mark.parametrize("args", [
+    {"location": None},
+    {"all_day": "true"},
+    {"start_time": "2026-03-10"},
+    {"start_time": "1767348000"},
+])
+def test_arguments_the_old_server_accepted_still_work(server, fake_smtp, args) -> None:
+    result = call("create_proton_calendar_event", **{"summary": "s", **TIMES, **args})
+
+    assert result.isError is False, result.content[0].text
+
+
+@pytest.mark.parametrize("args", [
+    {"attendees": '["a@example.com"]'},
+    {"bogus": 1},
+    {"summary": 5},
+])
+def test_arguments_the_old_server_refused_still_refuse(server, fake_smtp, args) -> None:
+    result = call("create_proton_calendar_event", **{"summary": "s", **TIMES, **args})
+
+    assert result.isError is True
+    assert fake_smtp.instances == []
+
+
+def test_sequence_as_a_string_still_works(server, fake_smtp) -> None:
+    result = call("update_proton_calendar_event", event_uid="u", summary="s", sequence="3", **TIMES)
+
+    assert result.isError is False, result.content[0].text
+    assert "SEQUENCE:3" in last_sent(fake_smtp).ics.split("\r\n")

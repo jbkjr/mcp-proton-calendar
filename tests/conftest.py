@@ -70,12 +70,12 @@ def server(monkeypatch: pytest.MonkeyPatch, fake_smtp: type[FakeSMTP]):
     monkeypatch.setattr(app, "EMAIL", "me@example.com")
     monkeypatch.setattr(app, "FULL_NAME", "Test Organizer")
     monkeypatch.setattr(app, "get_smtp_password", lambda: FAKE_SECRET)
-    return app.mcp
+    return app.server
 
 
 def _with_session(fn):
     async def run():
-        async with create_connected_server_and_client_session(app.mcp._mcp_server) as session:
+        async with create_connected_server_and_client_session(app.server) as session:
             return await fn(session)
 
     return anyio.run(run)

@@ -1,3 +1,4 @@
+import inspect
 import os
 import re
 import smtplib
@@ -5,14 +6,23 @@ import uuid
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
+from typing import Any, Callable, Optional
 
-from mcp.server.fastmcp import FastMCP
+import anyio
+from mcp import types
+from mcp.server.lowlevel import Server
+from mcp.server.stdio import stdio_server
+from pydantic import TypeAdapter
+from pydantic_core import ArgsKwargs
 
 from mcp_proton_calendar.credentials import describe_sources, get_smtp_password
 from mcp_proton_calendar.ics import build_ics
 
-mcp = FastMCP("proton-calendar")
+# The low-level server, because FastMCP's pre_parse_json turns an Optional[str] argument
+# such as '{"a": 1}' or 'null' into JSON. TypeAdapter on the function validates as sent.
+server = Server("proton-calendar")
+_TOOLS: dict[str, tuple[Callable[..., str], TypeAdapter]] = {}
+_OUTPUT_SCHEMA = {"type": "object", "properties": {"result": {"type": "string"}}, "required": ["result"]}
 
 # Configuration from environment
 EMAIL = os.environ.get("PROTON_CALENDAR_EMAIL", "").strip()
@@ -25,6 +35,25 @@ SMTP_TIMEOUT_SECONDS = 30
 # first, PROTON_CALENDAR_SMTP_PASSWORD as fallback) so that importing this module
 # never touches the keychain and a rotated Bridge token is picked up without a
 # server restart.
+
+
+def tool(fn: Callable[..., str]) -> Callable[..., str]:
+    _TOOLS[fn.__name__] = (fn, TypeAdapter(fn))
+    return fn
+
+
+@server.list_tools()
+async def _list_tools() -> list[types.Tool]:
+    return [
+        types.Tool(name=name, description=inspect.getdoc(fn), inputSchema=adapter.json_schema(), outputSchema=_OUTPUT_SCHEMA)
+        for name, (fn, adapter) in _TOOLS.items()
+    ]
+
+
+@server.call_tool(validate_input=False)
+async def _call_tool(name: str, arguments: dict[str, Any]):
+    text = _TOOLS[name][1].validate_python(ArgsKwargs((), arguments))
+    return [types.TextContent(type="text", text=text)], {"result": text}
 
 
 def _generate_ics(method: str, uid: str, summary: str, start_time: datetime, end_time: datetime, **fields) -> str:
@@ -83,7 +112,7 @@ def _send_ics_email(
         server.sendmail(EMAIL, all_recipients, msg.as_bytes())
 
 
-@mcp.tool()
+@tool
 def create_proton_calendar_event(
     summary: str,
     start_time: datetime,
@@ -141,7 +170,7 @@ def create_proton_calendar_event(
     )
 
 
-@mcp.tool()
+@tool
 def update_proton_calendar_event(
     event_uid: str,
     summary: str,
@@ -200,7 +229,7 @@ def update_proton_calendar_event(
     )
 
 
-@mcp.tool()
+@tool
 def cancel_proton_calendar_event(
     event_uid: str,
     summary: str,
@@ -244,10 +273,15 @@ def cancel_proton_calendar_event(
     )
 
 
+async def _serve() -> None:
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
+
+
 def main():
     if not EMAIL:
         raise SystemExit("PROTON_CALENDAR_EMAIL is required: it is the organizer and always a recipient.")
-    mcp.run()
+    anyio.run(_serve)
 
 
 if __name__ == "__main__":
