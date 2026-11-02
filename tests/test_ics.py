@@ -140,3 +140,67 @@ def test_golden_update(server, fake_smtp) -> None:
         "STATUS:CONFIRMED",
     )
     assert last_sent(fake_smtp).message["Subject"] == "Calendar Update: Moved"
+
+
+def unfolded(ics: str) -> list[str]:
+    return ics.replace("\r\n ", "").split("\r\n")
+
+
+def properties(ics: str) -> list[str]:
+    return [re.split(r"[:;]", line, maxsplit=1)[0] for line in unfolded(ics)]
+
+
+TIMES = {"start_time": "2026-03-10T12:00:00Z", "end_time": "2026-03-10T13:00:00Z"}
+INJECTION = "x\r\nATTENDEE:mailto:evil@example.com\nEND:VEVENT\rBEGIN:VALARM"
+
+
+def test_text_values_are_escaped(server, fake_smtp) -> None:
+    lines = ics_of(
+        fake_smtp, CREATE, **TIMES,
+        summary="a;b,c\\d", location="one, two; three", description="line one\nline two\r\nline three",
+    )
+    assert "SUMMARY:a\\;b\\,c\\\\d" in lines
+    assert "LOCATION:one\\, two\\; three" in lines
+    assert "DESCRIPTION:line one\\nline two\\nline three" in lines
+
+
+def test_newlines_in_text_cannot_add_properties(server, fake_smtp) -> None:
+    call(CREATE, **TIMES, summary=INJECTION, location=INJECTION, description=INJECTION)
+    props = properties(last_sent(fake_smtp).ics)
+
+    assert "ATTENDEE" not in props
+    assert props.count("END") == 2 and props.count("BEGIN") == 2
+
+
+def test_uid_cannot_add_properties(server, fake_smtp) -> None:
+    for tool, args in [(UPDATE, {**TIMES, "summary": "s"}), (CANCEL, {"summary": "s"})]:
+        call(tool, event_uid=INJECTION, **args)
+        assert "ATTENDEE" not in properties(last_sent(fake_smtp).ics)
+
+
+def test_other_control_characters_are_dropped(server, fake_smtp) -> None:
+    lines = ics_of(fake_smtp, CREATE, **TIMES, summary="a\x00b\x1bc\td")
+    assert "SUMMARY:abc\td" in lines
+
+
+def test_malformed_attendee_is_refused_and_nothing_is_sent(server, fake_smtp) -> None:
+    for bad in ["a@example.com\r\nATTENDEE:mailto:evil@example.com", "a@example.com;RSVP=FALSE", "not-an-address", "Name <a@example.com>"]:
+        result = call(CREATE, **TIMES, summary="s", attendees=[bad])
+        assert result.isError is True, bad
+    assert fake_smtp.instances == []
+
+
+def test_subject_cannot_carry_a_header(server, fake_smtp) -> None:
+    result = call(CREATE, **TIMES, summary="x\r\nBcc: evil@example.com")
+
+    assert result.isError is False, result.content[0].text
+    sent = last_sent(fake_smtp)
+    assert sent.message["Bcc"] is None
+    assert sent.message["Subject"] == "Calendar: x Bcc: evil@example.com"
+    assert sent.recipients == ["me@example.com"]
+
+
+def test_organizer_name_is_quoted_and_cleaned(server, fake_smtp, monkeypatch) -> None:
+    monkeypatch.setattr("mcp_proton_calendar.app.FULL_NAME", 'Doe, "Jo"\n')
+    lines = ics_of(fake_smtp, CREATE, **TIMES, summary="s", attendees=["a@example.com"])
+    assert 'ORGANIZER;CN="Doe, Jo":mailto:me@example.com' in lines

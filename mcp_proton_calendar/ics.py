@@ -2,9 +2,32 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, time, timedelta, timezone
 
 PRODID = "-//mcp-proton-calendar//EN"
+
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_ADDRESS = re.compile(r"[^\s<>;:,\"\\@]+@[^\s<>;:,\"\\@]+")
+
+
+def escape_text(value: str) -> str:
+    """RFC 5545 TEXT: line breaks become a literal backslash-n, so a value stays on its property."""
+    value = value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+    value = re.sub(r"\r\n|\r|\n", r"\\n", value)
+    return _CONTROL.sub("", value)
+
+
+def _param(value: str) -> str:
+    """A quoted parameter value, which can't hold a double quote or a control character."""
+    return '"' + _CONTROL.sub("", value.replace('"', "").replace("\r", "").replace("\n", "")).strip() + '"'
+
+
+def _mailto(address: str) -> str:
+    """A CAL-ADDRESS isn't TEXT and can't be escaped, so a bad one is refused."""
+    if not _ADDRESS.fullmatch(address):
+        raise ValueError(f"not a plain email address: {address!r}")
+    return f"mailto:{address}"
 
 
 def _utc(dt: datetime) -> str:
@@ -56,20 +79,20 @@ def build_ics(
         f"PRODID:{PRODID}",
         f"METHOD:{method}",
         "BEGIN:VEVENT",
-        f"UID:{uid}",
+        f"UID:{escape_text(uid)}",
         f"DTSTAMP:{_utc(dtstamp)}",
         *_dates(start, end, all_day),
-        f"SUMMARY:{summary}",
+        f"SUMMARY:{escape_text(summary)}",
         f"SEQUENCE:{sequence}",
         f"STATUS:{status}",
     ]
     if attendees:
-        cn = f';CN="{organizer_name}"' if organizer_name else ""
+        cn = f";CN={_param(organizer_name)}" if organizer_name else ""
         lines.append(f"ORGANIZER{cn}:mailto:{organizer_email}")
-        lines.extend(f"ATTENDEE;RSVP=TRUE:mailto:{attendee}" for attendee in attendees)
+        lines.extend(f"ATTENDEE;RSVP=TRUE:{_mailto(attendee)}" for attendee in attendees)
     if location:
-        lines.append(f"LOCATION:{location}")
+        lines.append(f"LOCATION:{escape_text(location)}")
     if description:
-        lines.append(f"DESCRIPTION:{description}")
+        lines.append(f"DESCRIPTION:{escape_text(description)}")
     lines.extend(["END:VEVENT", "END:VCALENDAR"])
     return "\r\n".join(lines)

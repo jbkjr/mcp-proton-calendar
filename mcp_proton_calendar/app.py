@@ -1,4 +1,5 @@
 import os
+import re
 import smtplib
 import uuid
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ def _send_ics_email(
     msg = MIMEMultipart("alternative")
     msg["From"] = f"{FULL_NAME} <{EMAIL}>"
     msg["To"] = ", ".join(all_recipients)
-    msg["Subject"] = subject
+    msg["Subject"] = re.sub(r"[\r\n]+", " ", subject)
 
     # Plain text fallback
     text_part = MIMEText(
