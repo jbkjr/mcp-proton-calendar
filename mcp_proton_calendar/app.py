@@ -1,82 +1,74 @@
+import inspect
 import os
+import re
 import smtplib
 import uuid
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
+from typing import Any, Callable, Optional
 
-from fastmcp import FastMCP
+import anyio
+from mcp import types
+from mcp.server.lowlevel import Server
+from mcp.server.stdio import stdio_server
+from pydantic import TypeAdapter
+from pydantic_core import ArgsKwargs
 
 from mcp_proton_calendar.credentials import describe_sources, get_smtp_password
+from mcp_proton_calendar.ics import build_ics
 
-mcp = FastMCP("proton-calendar")
+# The low-level server, because FastMCP's pre_parse_json turns an Optional[str] argument
+# such as '{"a": 1}' or 'null' into JSON. TypeAdapter on the function validates as sent.
+server = Server("proton-calendar")
+_TOOLS: dict[str, tuple[Callable[..., str], TypeAdapter]] = {}
+_OUTPUT_SCHEMA = {"type": "object", "properties": {"result": {"type": "string"}}, "required": ["result"]}
 
 # Configuration from environment
-EMAIL = os.environ.get("PROTON_CALENDAR_EMAIL", "")
+EMAIL = os.environ.get("PROTON_CALENDAR_EMAIL", "").strip()
 FULL_NAME = os.environ.get("PROTON_CALENDAR_FULL_NAME", "")
 SMTP_HOST = os.environ.get("PROTON_CALENDAR_SMTP_HOST", "127.0.0.1")
 SMTP_PORT = int(os.environ.get("PROTON_CALENDAR_SMTP_PORT", "1025"))
 SMTP_USER = os.environ.get("PROTON_CALENDAR_SMTP_USER", "")
+SMTP_TIMEOUT_SECONDS = 30
 # The SMTP token is resolved lazily by credentials.get_smtp_password() (keyring
 # first, PROTON_CALENDAR_SMTP_PASSWORD as fallback) so that importing this module
 # never touches the keychain and a rotated Bridge token is picked up without a
 # server restart.
 
 
-def _to_utc(dt: datetime) -> datetime:
-    """Convert datetime to UTC. Treats naive datetimes as local time."""
-    if dt.tzinfo is None:
-        dt = dt.astimezone()  # interpret as local time
-    return dt.astimezone(timezone.utc)
+def tool(fn: Callable[..., str]) -> Callable[..., str]:
+    _TOOLS[fn.__name__] = (fn, TypeAdapter(fn))
+    return fn
 
 
-def _format_datetime(dt: datetime, all_day: bool = False) -> str:
-    """Format datetime for ICS. Uses DATE for all-day, UTC DATETIME otherwise."""
-    if all_day:
-        return dt.strftime("%Y%m%d")
-    return _to_utc(dt).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _generate_ics(
-    method: str,
-    uid: str,
-    summary: str,
-    start_time: datetime,
-    end_time: datetime,
-    location: Optional[str] = None,
-    description: Optional[str] = None,
-    all_day: bool = False,
-    sequence: int = 0,
-    status: str = "CONFIRMED",
-    attendees: Optional[list[str]] = None,
-) -> str:
-    """Generate an ICS calendar string."""
-    dt_prefix = "VALUE=DATE:" if all_day else ":"
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//mcp-proton-calendar//EN",
-        f"METHOD:{method}",
-        "BEGIN:VEVENT",
-        f"UID:{uid}",
-        f"DTSTAMP:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
-        f"DTSTART{dt_prefix}{_format_datetime(start_time, all_day)}",
-        f"DTEND{dt_prefix}{_format_datetime(end_time, all_day)}",
-        f"SUMMARY:{summary}",
-        f"SEQUENCE:{sequence}",
-        f"STATUS:{status}",
+@server.list_tools()
+async def _list_tools() -> list[types.Tool]:
+    return [
+        types.Tool(name=name, description=inspect.getdoc(fn), inputSchema=adapter.json_schema(), outputSchema=_OUTPUT_SCHEMA)
+        for name, (fn, adapter) in _TOOLS.items()
     ]
-    if attendees:
-        lines.append(f"ORGANIZER;CN={FULL_NAME}:mailto:{EMAIL}")
-        for attendee in attendees:
-            lines.append(f"ATTENDEE;RSVP=TRUE:mailto:{attendee}")
-    if location:
-        lines.append(f"LOCATION:{location}")
-    if description:
-        lines.append(f"DESCRIPTION:{description}")
-    lines.extend(["END:VEVENT", "END:VCALENDAR"])
-    return "\r\n".join(lines)
+
+
+@server.call_tool(validate_input=False)
+async def _call_tool(name: str, arguments: dict[str, Any]):
+    text = _TOOLS[name][1].validate_python(ArgsKwargs((), arguments))
+    return [types.TextContent(type="text", text=text)], {"result": text}
+
+
+def _generate_ics(method: str, uid: str, summary: str, start_time: Optional[datetime] = None, end_time: Optional[datetime] = None, **fields) -> str:
+    """Build the ICS for one event, as this organizer, stamped now."""
+    return build_ics(
+        method=method,
+        uid=uid,
+        summary=summary,
+        start=start_time,
+        end=end_time,
+        dtstamp=datetime.now(timezone.utc),
+        organizer_email=EMAIL,
+        organizer_name=FULL_NAME,
+        **fields,
+    )
 
 
 def _send_ics_email(
@@ -99,7 +91,7 @@ def _send_ics_email(
     msg = MIMEMultipart("alternative")
     msg["From"] = f"{FULL_NAME} <{EMAIL}>"
     msg["To"] = ", ".join(all_recipients)
-    msg["Subject"] = subject
+    msg["Subject"] = re.sub(r"[\r\n]+", " ", subject)
 
     # Plain text fallback
     text_part = MIMEText(
@@ -114,13 +106,13 @@ def _send_ics_email(
     ics_part.set_param("method", method)
     msg.attach(ics_part)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as server:
         server.starttls()
         server.login(SMTP_USER, smtp_password)
         server.sendmail(EMAIL, all_recipients, msg.as_bytes())
 
 
-@mcp.tool()
+@tool
 def create_proton_calendar_event(
     summary: str,
     start_time: datetime,
@@ -140,7 +132,9 @@ def create_proton_calendar_event(
         end_time: Event end time (ISO format datetime)
         location: Event location (optional)
         description: Event description (optional)
-        all_day: Whether this is an all-day event (optional, default False)
+        all_day: Whether this is an all-day event (optional, default False). A later
+            end_time at midnight is exclusive, as in RFC 5545; a same-day end, or one
+            with a time of day, includes that date.
         attendees: List of email addresses to invite (optional). When provided,
             invitees receive the event as an invitation they can accept/decline.
     """
@@ -176,7 +170,7 @@ def create_proton_calendar_event(
     )
 
 
-@mcp.tool()
+@tool
 def update_proton_calendar_event(
     event_uid: str,
     summary: str,
@@ -200,7 +194,9 @@ def update_proton_calendar_event(
         sequence: Sequence number for the update (should increment from previous, default 1)
         location: Updated event location (optional)
         description: Updated event description (optional)
-        all_day: Whether this is an all-day event (optional, default False)
+        all_day: Whether this is an all-day event (optional, default False). A later
+            end_time at midnight is exclusive, as in RFC 5545; a same-day end, or one
+            with a time of day, includes that date.
         attendees: List of email addresses to invite (optional)
     """
     method = "REQUEST" if attendees else "PUBLISH"
@@ -233,10 +229,11 @@ def update_proton_calendar_event(
     )
 
 
-@mcp.tool()
+@tool
 def cancel_proton_calendar_event(
     event_uid: str,
     summary: str,
+    attendees: Optional[list[str]] = None,
 ) -> str:
     """Cancel an existing Proton Calendar event by sending a cancellation ICS.
 
@@ -245,29 +242,43 @@ def cancel_proton_calendar_event(
     Args:
         event_uid: The UID of the event to cancel (from create_proton_calendar_event)
         summary: The event title/summary (for the cancellation email subject)
+        attendees: Email addresses to send the cancellation to, so invitees' copies are
+            cancelled too (optional). Without them it goes to you only, and invitees
+            keep the event.
     """
-    now = datetime.now(timezone.utc)
     ics_content = _generate_ics(
         method="CANCEL",
         uid=event_uid,
         summary=summary,
-        start_time=now,
-        end_time=now,
         status="CANCELLED",
         sequence=99,
+        attendees=attendees,
     )
 
-    _send_ics_email(f"Calendar Cancellation: {summary}", ics_content, method="CANCEL")
+    _send_ics_email(
+        f"Calendar Cancellation: {summary}",
+        ics_content,
+        method="CANCEL",
+        recipients=attendees,
+    )
 
     return (
         f"Event cancellation sent successfully.\n"
         f"UID: {event_uid}\n"
         f"Summary: {summary}\n"
+        + (f"Attendees: {', '.join(attendees)}\n" if attendees else "")
     )
 
 
+async def _serve() -> None:
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
+
+
 def main():
-    mcp.run()
+    if not EMAIL:
+        raise SystemExit("PROTON_CALENDAR_EMAIL is required: it is the organizer and always a recipient.")
+    anyio.run(_serve)
 
 
 if __name__ == "__main__":

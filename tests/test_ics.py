@@ -1,0 +1,273 @@
+"""ICS output, through the tools. UID and DTSTAMP vary per call, so goldens mask them."""
+
+from __future__ import annotations
+
+import re
+
+from conftest import call, last_sent
+
+CREATE = "create_proton_calendar_event"
+UPDATE = "update_proton_calendar_event"
+CANCEL = "cancel_proton_calendar_event"
+
+
+def masked(ics: str) -> list[str]:
+    """CRLF-split lines with the volatile values replaced."""
+    assert ics.endswith("END:VCALENDAR") or ics.endswith("END:VCALENDAR\r\n")
+    assert "\n" not in ics.replace("\r\n", "")
+    ics = re.sub(r"^DTSTAMP:\d{8}T\d{6}Z", "DTSTAMP:<now>", ics, flags=re.M)
+    ics = re.sub(r"^UID:[0-9a-f-]{36}@mcp-proton-calendar", "UID:<new>", ics, flags=re.M)
+    return ics.strip("\r\n").split("\r\n")
+
+
+def event(method: str, *props: str) -> list[str]:
+    return [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//mcp-proton-calendar//EN",
+        f"METHOD:{method}",
+        "BEGIN:VEVENT",
+        *props,
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+
+
+def ics_of(fake_smtp, tool: str, **args: object) -> list[str]:
+    result = call(tool, **args)
+    assert result.isError is False, result.content[0].text
+    return masked(last_sent(fake_smtp).ics)
+
+
+def all_day_dates(fake_smtp, start: str, end: str) -> list[str]:
+    lines = ics_of(fake_smtp, CREATE, summary="Trip", start_time=start, end_time=end, all_day=True)
+    return [line for line in lines if line.startswith("DT") and not line.startswith("DTSTAMP")]
+
+
+def test_golden_timed_event(server, fake_smtp) -> None:
+    assert ics_of(
+        fake_smtp, CREATE,
+        summary="Lunch", start_time="2026-03-10T12:00:00-06:00", end_time="2026-03-10T13:00:00-06:00",
+        location="Cafe", description="Bring notes",
+    ) == event(
+        "PUBLISH",
+        "UID:<new>",
+        "DTSTAMP:<now>",
+        "DTSTART:20260310T180000Z",
+        "DTEND:20260310T190000Z",
+        "SUMMARY:Lunch",
+        "SEQUENCE:0",
+        "STATUS:CONFIRMED",
+        "LOCATION:Cafe",
+        "DESCRIPTION:Bring notes",
+    )
+
+
+def test_golden_all_day_event(server, fake_smtp) -> None:
+    assert ics_of(
+        fake_smtp, CREATE,
+        summary="Holiday", start_time="2026-01-02", end_time="2026-01-03", all_day=True,
+    ) == event(
+        "PUBLISH",
+        "UID:<new>",
+        "DTSTAMP:<now>",
+        "DTSTART;VALUE=DATE:20260102",
+        "DTEND;VALUE=DATE:20260103",
+        "SUMMARY:Holiday",
+        "SEQUENCE:0",
+        "STATUS:CONFIRMED",
+    )
+
+
+def test_all_day_same_date_gets_a_next_day_end(server, fake_smtp) -> None:
+    assert all_day_dates(fake_smtp, "2026-01-02", "2026-01-02") == [
+        "DTSTART;VALUE=DATE:20260102",
+        "DTEND;VALUE=DATE:20260103",
+    ]
+
+
+def test_all_day_end_at_midnight_is_exclusive(server, fake_smtp) -> None:
+    assert all_day_dates(fake_smtp, "2026-01-02", "2026-01-05")[1] == "DTEND;VALUE=DATE:20260105"
+
+
+def test_all_day_end_with_a_time_covers_that_date(server, fake_smtp) -> None:
+    assert all_day_dates(fake_smtp, "2026-01-02T00:00:00", "2026-01-05T23:59:59")[1] == "DTEND;VALUE=DATE:20260106"
+    assert all_day_dates(fake_smtp, "2026-01-02T09:00:00", "2026-01-02T17:00:00")[1] == "DTEND;VALUE=DATE:20260103"
+
+
+def test_all_day_accepts_a_mix_of_naive_and_aware_times(server, fake_smtp) -> None:
+    assert all_day_dates(fake_smtp, "2026-01-02", "2026-01-03T10:00:00Z")[1] == "DTEND;VALUE=DATE:20260104"
+
+
+def test_all_day_month_and_year_rollover(server, fake_smtp) -> None:
+    assert all_day_dates(fake_smtp, "2026-12-31", "2026-12-31")[1] == "DTEND;VALUE=DATE:20270101"
+
+
+def test_golden_event_with_attendees(server, fake_smtp) -> None:
+    assert ics_of(
+        fake_smtp, CREATE,
+        summary="Review", start_time="2026-03-10T12:00:00Z", end_time="2026-03-10T13:00:00Z",
+        attendees=["a@example.com", "b@example.com"],
+    ) == event(
+        "REQUEST",
+        "UID:<new>",
+        "DTSTAMP:<now>",
+        "DTSTART:20260310T120000Z",
+        "DTEND:20260310T130000Z",
+        "SUMMARY:Review",
+        "SEQUENCE:0",
+        "STATUS:CONFIRMED",
+        'ORGANIZER;CN="Test Organizer":mailto:me@example.com',
+        "ATTENDEE;RSVP=TRUE:mailto:a@example.com",
+        "ATTENDEE;RSVP=TRUE:mailto:b@example.com",
+    )
+    assert last_sent(fake_smtp).recipients == ["me@example.com", "a@example.com", "b@example.com"]
+
+
+def test_golden_update(server, fake_smtp) -> None:
+    assert ics_of(
+        fake_smtp, UPDATE,
+        event_uid="abc@example.com", summary="Moved", sequence=3,
+        start_time="2026-03-11T12:00:00Z", end_time="2026-03-11T13:00:00Z",
+    ) == event(
+        "PUBLISH",
+        "UID:abc@example.com",
+        "DTSTAMP:<now>",
+        "DTSTART:20260311T120000Z",
+        "DTEND:20260311T130000Z",
+        "SUMMARY:Moved",
+        "SEQUENCE:3",
+        "STATUS:CONFIRMED",
+    )
+    assert last_sent(fake_smtp).message["Subject"] == "Calendar Update: Moved"
+
+
+def unfolded(ics: str) -> list[str]:
+    return ics.replace("\r\n ", "").split("\r\n")
+
+
+def properties(ics: str) -> list[str]:
+    return [re.split(r"[:;]", line, maxsplit=1)[0] for line in unfolded(ics)]
+
+
+TIMES = {"start_time": "2026-03-10T12:00:00Z", "end_time": "2026-03-10T13:00:00Z"}
+INJECTION = "x\r\nATTENDEE:mailto:evil@example.com\nEND:VEVENT\rBEGIN:VALARM"
+
+
+def test_text_values_are_escaped(server, fake_smtp) -> None:
+    lines = ics_of(
+        fake_smtp, CREATE, **TIMES,
+        summary="a;b,c\\d", location="one, two; three", description="line one\nline two\r\nline three",
+    )
+    assert "SUMMARY:a\\;b\\,c\\\\d" in lines
+    assert "LOCATION:one\\, two\\; three" in lines
+    assert "DESCRIPTION:line one\\nline two\\nline three" in lines
+
+
+def test_newlines_in_text_cannot_add_properties(server, fake_smtp) -> None:
+    call(CREATE, **TIMES, summary=INJECTION, location=INJECTION, description=INJECTION)
+    props = properties(last_sent(fake_smtp).ics)
+
+    assert "ATTENDEE" not in props
+    assert props.count("END") == 2 and props.count("BEGIN") == 2
+
+
+def test_uid_cannot_add_properties(server, fake_smtp) -> None:
+    for tool, args in [(UPDATE, {**TIMES, "summary": "s"}), (CANCEL, {"summary": "s"})]:
+        call(tool, event_uid=INJECTION, **args)
+        assert "ATTENDEE" not in properties(last_sent(fake_smtp).ics)
+
+
+def test_other_control_characters_are_dropped(server, fake_smtp) -> None:
+    lines = ics_of(fake_smtp, CREATE, **TIMES, summary="a\x00b\x1bc\td")
+    assert "SUMMARY:abc\td" in lines
+
+
+def test_malformed_attendee_is_refused_and_nothing_is_sent(server, fake_smtp) -> None:
+    for bad in ["a@example.com\r\nATTENDEE:mailto:evil@example.com", "a@example.com;RSVP=FALSE", "not-an-address", "Name <a@example.com>"]:
+        result = call(CREATE, **TIMES, summary="s", attendees=[bad])
+        assert result.isError is True, bad
+    assert fake_smtp.instances == []
+
+
+def test_subject_cannot_carry_a_header(server, fake_smtp) -> None:
+    result = call(CREATE, **TIMES, summary="x\r\nBcc: evil@example.com")
+
+    assert result.isError is False, result.content[0].text
+    sent = last_sent(fake_smtp)
+    assert sent.message["Bcc"] is None
+    assert sent.message["Subject"] == "Calendar: x Bcc: evil@example.com"
+    assert sent.recipients == ["me@example.com"]
+
+
+def test_organizer_name_is_quoted_and_cleaned(server, fake_smtp, monkeypatch) -> None:
+    monkeypatch.setattr("mcp_proton_calendar.app.FULL_NAME", 'Doe, "Jo"\n')
+    lines = ics_of(fake_smtp, CREATE, **TIMES, summary="s", attendees=["a@example.com"])
+    assert 'ORGANIZER;CN="Doe, Jo":mailto:me@example.com' in lines
+
+
+def test_golden_folding_of_a_long_line(server, fake_smtp) -> None:
+    lines = ics_of(fake_smtp, CREATE, **TIMES, summary="s", description="y" * 150)
+    assert lines[lines.index("STATUS:CONFIRMED") + 1 :][:3] == [
+        "DESCRIPTION:" + "y" * 63,
+        " " + "y" * 74,
+        " " + "y" * 13,
+    ]
+
+
+def test_lines_stay_within_75_octets_and_unfold_to_the_original(server, fake_smtp) -> None:
+    text = "é日本語🙂 " * 60
+    call(CREATE, **TIMES, summary="s", description=text)
+    ics = last_sent(fake_smtp).ics  # decoding raises if a fold split a UTF-8 sequence
+
+    assert all(len(line.encode("utf-8")) <= 75 for line in ics.split("\r\n"))
+    assert f"DESCRIPTION:{text}" in unfolded(ics)
+    for line in ics.split("\r\n"):
+        line.encode("utf-8").decode("utf-8")
+
+
+def test_every_line_ends_in_crlf(server, fake_smtp) -> None:
+    call(CREATE, **TIMES, summary="s")
+    assert last_sent(fake_smtp).ics.endswith("END:VCALENDAR\r\n")
+
+
+def test_golden_cancel_without_attendees_is_self_only(server, fake_smtp) -> None:
+    assert ics_of(fake_smtp, CANCEL, event_uid="abc@example.com", summary="Gone") == event(
+        "CANCEL",
+        "UID:abc@example.com",
+        "DTSTAMP:<now>",
+        "SUMMARY:Gone",
+        "SEQUENCE:99",
+        "STATUS:CANCELLED",
+    )
+    assert last_sent(fake_smtp).recipients == ["me@example.com"]
+    assert last_sent(fake_smtp).message["Subject"] == "Calendar Cancellation: Gone"
+
+
+def test_golden_cancel_with_attendees_reaches_them(server, fake_smtp) -> None:
+    result = call(CANCEL, event_uid="abc@example.com", summary="Gone", attendees=["a@example.com", "b@example.com"])
+
+    assert result.isError is False, result.content[0].text
+    assert "Attendees: a@example.com, b@example.com" in result.content[0].text
+    assert masked(last_sent(fake_smtp).ics) == event(
+        "CANCEL",
+        "UID:abc@example.com",
+        "DTSTAMP:<now>",
+        "SUMMARY:Gone",
+        "SEQUENCE:99",
+        "STATUS:CANCELLED",
+        'ORGANIZER;CN="Test Organizer":mailto:me@example.com',
+        "ATTENDEE:mailto:a@example.com",
+        "ATTENDEE:mailto:b@example.com",
+    )
+    sent = last_sent(fake_smtp)
+    assert sent.recipients == ["me@example.com", "a@example.com", "b@example.com"]
+    part = next(p for p in sent.message.walk() if p.get_content_type() == "text/calendar")
+    assert part.get_param("method") == "CANCEL"
+
+
+def test_cancel_with_a_malformed_attendee_sends_nothing(server, fake_smtp) -> None:
+    result = call(CANCEL, event_uid="u", summary="s", attendees=["a@example.com\nATTENDEE:x"])
+
+    assert result.isError is True
+    assert fake_smtp.instances == []

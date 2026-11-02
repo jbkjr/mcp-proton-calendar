@@ -1,0 +1,158 @@
+{
+  "cancel_proton_calendar_event": {
+    "properties": {
+      "attendees": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "event_uid": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "event_uid",
+      "summary"
+    ]
+  },
+  "create_proton_calendar_event": {
+    "properties": {
+      "all_day": {
+        "default": false,
+        "type": "boolean"
+      },
+      "attendees": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "description": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "end_time": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "location": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "start_time": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "summary",
+      "start_time",
+      "end_time"
+    ]
+  },
+  "update_proton_calendar_event": {
+    "properties": {
+      "all_day": {
+        "default": false,
+        "type": "boolean"
+      },
+      "attendees": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "description": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "end_time": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "event_uid": {
+        "type": "string"
+      },
+      "location": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "sequence": {
+        "default": 1,
+        "type": "integer"
+      },
+      "start_time": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "event_uid",
+      "summary",
+      "start_time",
+      "end_time"
+    ]
+  }
+}

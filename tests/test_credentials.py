@@ -6,15 +6,13 @@ real OS keychain and never handles a real credential.
 
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from mcp_proton_calendar import credentials
 
 FAKE_SECRET = "fake-bridge-token-for-tests"  # not a real credential
-OWN_ENTRY = (credentials.DEFAULT_KEYRING_SERVICE, credentials.DEFAULT_KEYRING_USERNAME)
-SHARED_ENTRY = (credentials.SHARED_KEYRING_SERVICE, credentials.SHARED_KEYRING_USERNAME)
+OWN_ENTRY = ("mcp-proton-calendar", "smtp")
+SHARED_ENTRY = ("mcp-email-server", "proton:outgoing")  # must move together with mcp-email-server
 
 
 class FakeKeyring:
@@ -35,19 +33,14 @@ class FakeKeyring:
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolate tests from the developer's own environment."""
-    for var in (
-        credentials.PASSWORD_ENV_VAR,
-        credentials.SERVICE_ENV_VAR,
-        credentials.USERNAME_ENV_VAR,
-    ):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv(credentials.PASSWORD_ENV_VAR, raising=False)
 
 
 @pytest.fixture(autouse=True)
 def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> FakeKeyring:
     """Replace the ``keyring`` module so the real keychain is never touched."""
     fake = FakeKeyring()
-    monkeypatch.setitem(sys.modules, "keyring", fake)
+    monkeypatch.setattr(credentials, "keyring", fake)
     return fake
 
 
@@ -96,13 +89,6 @@ def test_keyring_backend_error_falls_back_to_env_var(
     assert credentials.get_smtp_password() == FAKE_SECRET
 
 
-def test_missing_keyring_module_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(sys.modules, "keyring", None)  # makes `import keyring` raise
-    monkeypatch.setenv(credentials.PASSWORD_ENV_VAR, FAKE_SECRET)
-
-    assert credentials.get_smtp_password() == FAKE_SECRET
-
-
 def test_empty_keyring_value_is_treated_as_missing(
     monkeypatch: pytest.MonkeyPatch, fake_keyring: FakeKeyring
 ) -> None:
@@ -117,40 +103,15 @@ def test_returns_empty_string_when_nothing_is_configured() -> None:
     assert credentials.get_smtp_password() == ""
 
 
-def test_env_override_replaces_default_candidates(
+def test_override_env_vars_are_ignored(
     monkeypatch: pytest.MonkeyPatch, fake_keyring: FakeKeyring
 ) -> None:
-    monkeypatch.setenv(credentials.SERVICE_ENV_VAR, "custom-service")
-    monkeypatch.setenv(credentials.USERNAME_ENV_VAR, "custom-user")
-    fake_keyring.store[("custom-service", "custom-user")] = FAKE_SECRET
-    fake_keyring.store[SHARED_ENTRY] = "should-not-be-read"
+    monkeypatch.setenv("PROTON_CALENDAR_KEYRING_SERVICE", "custom-service")
+    monkeypatch.setenv("PROTON_CALENDAR_KEYRING_USERNAME", "custom-user")
+    fake_keyring.store[SHARED_ENTRY] = FAKE_SECRET
 
     assert credentials.get_smtp_password() == FAKE_SECRET
-    assert fake_keyring.calls == [("custom-service", "custom-user")]
-
-
-def test_env_override_service_only_keeps_default_username(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(credentials.SERVICE_ENV_VAR, "custom-service")
-
-    assert credentials.keyring_candidates() == [
-        ("custom-service", credentials.DEFAULT_KEYRING_USERNAME)
-    ]
-
-
-def test_env_override_username_only_keeps_default_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(credentials.USERNAME_ENV_VAR, "custom-user")
-
-    assert credentials.keyring_candidates() == [
-        (credentials.DEFAULT_KEYRING_SERVICE, "custom-user")
-    ]
-
-
-def test_default_candidate_order() -> None:
-    assert credentials.keyring_candidates() == [OWN_ENTRY, SHARED_ENTRY]
+    assert fake_keyring.calls == [OWN_ENTRY, SHARED_ENTRY]
 
 
 def test_describe_sources_lists_entries_and_env_var() -> None:
