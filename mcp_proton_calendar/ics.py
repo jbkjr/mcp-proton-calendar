@@ -30,6 +30,20 @@ def _mailto(address: str) -> str:
     return f"mailto:{address}"
 
 
+def fold(line: str) -> str:
+    """RFC 5545 folding: at most 75 octets per line, never inside a UTF-8 sequence."""
+    parts, current, size = [], "", 0
+    for char in line:
+        width = len(char.encode("utf-8"))
+        if size + width > 75:
+            parts.append(current)
+            current, size = " ", 1
+        current += char
+        size += width
+    parts.append(current)
+    return "\r\n".join(parts)
+
+
 def _utc(dt: datetime) -> str:
     """UTC DATE-TIME form. Naive datetimes are local time."""
     return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -95,4 +109,4 @@ def build_ics(
     if description:
         lines.append(f"DESCRIPTION:{escape_text(description)}")
     lines.extend(["END:VEVENT", "END:VCALENDAR"])
-    return "\r\n".join(lines)
+    return "".join(f"{fold(line)}\r\n" for line in lines)

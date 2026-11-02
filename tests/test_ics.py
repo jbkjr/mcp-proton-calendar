@@ -204,3 +204,28 @@ def test_organizer_name_is_quoted_and_cleaned(server, fake_smtp, monkeypatch) ->
     monkeypatch.setattr("mcp_proton_calendar.app.FULL_NAME", 'Doe, "Jo"\n')
     lines = ics_of(fake_smtp, CREATE, **TIMES, summary="s", attendees=["a@example.com"])
     assert 'ORGANIZER;CN="Doe, Jo":mailto:me@example.com' in lines
+
+
+def test_golden_folding_of_a_long_line(server, fake_smtp) -> None:
+    lines = ics_of(fake_smtp, CREATE, **TIMES, summary="s", description="y" * 150)
+    assert lines[lines.index("STATUS:CONFIRMED") + 1 :][:3] == [
+        "DESCRIPTION:" + "y" * 63,
+        " " + "y" * 74,
+        " " + "y" * 13,
+    ]
+
+
+def test_lines_stay_within_75_octets_and_unfold_to_the_original(server, fake_smtp) -> None:
+    text = "é日本語🙂 " * 60
+    call(CREATE, **TIMES, summary="s", description=text)
+    ics = last_sent(fake_smtp).ics  # decoding raises if a fold split a UTF-8 sequence
+
+    assert all(len(line.encode("utf-8")) <= 75 for line in ics.split("\r\n"))
+    assert f"DESCRIPTION:{text}" in unfolded(ics)
+    for line in ics.split("\r\n"):
+        line.encode("utf-8").decode("utf-8")
+
+
+def test_every_line_ends_in_crlf(server, fake_smtp) -> None:
+    call(CREATE, **TIMES, summary="s")
+    assert last_sent(fake_smtp).ics.endswith("END:VCALENDAR\r\n")
