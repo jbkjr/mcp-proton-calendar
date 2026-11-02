@@ -82,3 +82,14 @@ def test_server_answers_over_stdio() -> None:
     replies = [json.loads(line) for line in process.stdout.splitlines()]
     assert replies[0]["result"]["serverInfo"]["name"] == "proton-calendar"
     assert {t["name"] for t in replies[1]["result"]["tools"]} == set(SNAPSHOT)
+
+
+def test_empty_email_stops_the_server_at_start() -> None:
+    for value in ("", "   "):
+        env = {**os.environ, "PROTON_CALENDAR_EMAIL": value}
+        process = subprocess.run(
+            [sys.executable, "-c", "from mcp_proton_calendar.app import main; main()"],
+            input="", capture_output=True, text=True, env=env, timeout=30,
+        )
+        assert process.returncode != 0
+        assert "PROTON_CALENDAR_EMAIL" in process.stderr

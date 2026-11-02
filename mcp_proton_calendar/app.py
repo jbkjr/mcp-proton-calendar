@@ -15,11 +15,12 @@ from mcp_proton_calendar.ics import build_ics
 mcp = FastMCP("proton-calendar")
 
 # Configuration from environment
-EMAIL = os.environ.get("PROTON_CALENDAR_EMAIL", "")
+EMAIL = os.environ.get("PROTON_CALENDAR_EMAIL", "").strip()
 FULL_NAME = os.environ.get("PROTON_CALENDAR_FULL_NAME", "")
 SMTP_HOST = os.environ.get("PROTON_CALENDAR_SMTP_HOST", "127.0.0.1")
 SMTP_PORT = int(os.environ.get("PROTON_CALENDAR_SMTP_PORT", "1025"))
 SMTP_USER = os.environ.get("PROTON_CALENDAR_SMTP_USER", "")
+SMTP_TIMEOUT_SECONDS = 30
 # The SMTP token is resolved lazily by credentials.get_smtp_password() (keyring
 # first, PROTON_CALENDAR_SMTP_PASSWORD as fallback) so that importing this module
 # never touches the keychain and a rotated Bridge token is picked up without a
@@ -76,7 +77,7 @@ def _send_ics_email(
     ics_part.set_param("method", method)
     msg.attach(ics_part)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as server:
         server.starttls()
         server.login(SMTP_USER, smtp_password)
         server.sendmail(EMAIL, all_recipients, msg.as_bytes())
@@ -244,6 +245,8 @@ def cancel_proton_calendar_event(
 
 
 def main():
+    if not EMAIL:
+        raise SystemExit("PROTON_CALENDAR_EMAIL is required: it is the organizer and always a recipient.")
     mcp.run()
 
 

@@ -31,3 +31,13 @@ def test_send_raises_helpful_error_without_credential(
         app._send_ics_email("Calendar: Test", "BEGIN:VCALENDAR\r\nEND:VCALENDAR", method="PUBLISH")
 
     assert fake_smtp.instances == []
+
+
+def test_smtp_connection_has_a_timeout(
+    monkeypatch: pytest.MonkeyPatch, fake_smtp: type[FakeSMTP]
+) -> None:
+    monkeypatch.setattr(app, "get_smtp_password", lambda: FAKE_SECRET)
+
+    app._send_ics_email("Calendar: Test", "BEGIN:VCALENDAR\r\nEND:VCALENDAR", method="PUBLISH")
+
+    assert fake_smtp.instances[0].timeout == app.SMTP_TIMEOUT_SECONDS > 0
